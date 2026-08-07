@@ -8,35 +8,27 @@ from services.validation import validate_weights
 
 
 def _quality_score(parsed, validation: dict) -> int:
+    """Score only the fields required in the operational report."""
     score = 0
 
     if parsed.slip_no:
-        score += 6
+        score += 8
     if parsed.vehicle_no:
-        score += 2
-    if parsed.party:
-        score += 2
+        score += 3
     if parsed.product:
+        score += 3
+    if parsed.first_datetime or parsed.second_datetime:
         score += 2
-    if parsed.first_datetime:
-        score += 1
-    if parsed.second_datetime:
-        score += 1
-    if parsed.location:
-        score += 1
-    if parsed.operator:
-        score += 1
 
     if parsed.first_weight is not None:
-        score += 3
+        score += 5
     if parsed.second_weight is not None:
-        score += 3
+        score += 5
     if parsed.net_weight is not None:
-        score += 3
+        score += 5
 
-    # Correct weight arithmetic is the strongest signal that OCR found the right numbers.
     if validation.get("valid"):
-        score += 15
+        score += 20
 
     return score
 
@@ -59,7 +51,7 @@ def _parse_ocr_result(ocr_result: dict):
 
 
 def process_weight_slip(record_id: int) -> None:
-    """Run OCR, fallback OCR when needed, parsing, validation and duplicate detection."""
+    """Run OCR, one fallback pass, parsing, validation and duplicate detection."""
     db = SessionLocal()
 
     try:
@@ -81,8 +73,6 @@ def process_weight_slip(record_id: int) -> None:
         best_parsed, best_validation = _parse_ocr_result(primary_result)
         best_score = _quality_score(best_parsed, best_validation)
 
-        # Only spend extra OCR time on difficult slips. A valid weight triplet plus a
-        # detected slip number is considered sufficient and skips all fallback passes.
         needs_retry = (
             not best_validation.get("valid")
             or not best_parsed.slip_no
@@ -95,8 +85,9 @@ def process_weight_slip(record_id: int) -> None:
             record.processing_status = "ocr_retry"
             db.commit()
 
-            for variant in fallback_preprocess_images(record.stored_path):
-                candidate_result = run_ocr(variant)
+            variants = fallback_preprocess_images(record.stored_path)
+            if variants:
+                candidate_result = run_ocr(variants[0])
                 candidate_parsed, candidate_validation = _parse_ocr_result(candidate_result)
                 candidate_score = _quality_score(candidate_parsed, candidate_validation)
 
@@ -105,16 +96,6 @@ def process_weight_slip(record_id: int) -> None:
                     best_parsed = candidate_parsed
                     best_validation = candidate_validation
                     best_score = candidate_score
-
-                # Stop early once the critical fields are solid.
-                if (
-                    candidate_validation.get("valid")
-                    and candidate_parsed.slip_no
-                    and candidate_parsed.first_weight is not None
-                    and candidate_parsed.second_weight is not None
-                    and candidate_parsed.net_weight is not None
-                ):
-                    break
 
         record.processing_status = "parsing"
         db.commit()
