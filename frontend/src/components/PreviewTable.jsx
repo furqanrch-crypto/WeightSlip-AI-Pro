@@ -1,13 +1,28 @@
+function displayDate(record) {
+  const value = record.first_datetime || record.second_datetime;
+  if (!value) return "—";
+
+  // GTM OCR usually returns values such as "22-May-26 11:51:14 AM".
+  // The operational report only needs the date portion.
+  const match = String(value).match(/\b\d{1,2}[-/]?[A-Za-z]{3}[-/]?\d{2,4}\b/);
+  return match ? match[0] : value;
+}
+
+function formatWeight(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric.toLocaleString() : value;
+}
+
 export default function PreviewTable({ records = [] }) {
   const columns = [
     "Slip No",
-    "Vehicle",
-    "Party",
+    "Vehicle No",
     "Product",
     "1st Weight",
     "2nd Weight",
     "Net Weight",
-    "Status",
+    "Date",
   ];
 
   return (
@@ -29,7 +44,7 @@ export default function PreviewTable({ records = [] }) {
           style={{
             width: "100%",
             borderCollapse: "collapse",
-            minWidth: "950px",
+            minWidth: "850px",
           }}
         >
           <thead>
@@ -65,20 +80,36 @@ export default function PreviewTable({ records = [] }) {
                 </td>
               </tr>
             ) : (
-              records.map((record) => (
-                <tr key={record.id} style={{ borderBottom: "1px solid #334155" }}>
-                  <td style={{ padding: "12px" }}>{record.slip_no || "—"}</td>
-                  <td style={{ padding: "12px" }}>{record.vehicle_no || "—"}</td>
-                  <td style={{ padding: "12px" }}>{record.party || "—"}</td>
-                  <td style={{ padding: "12px" }}>{record.product || "—"}</td>
-                  <td style={{ padding: "12px" }}>{record.first_weight?.toLocaleString?.() || record.first_weight || "—"}</td>
-                  <td style={{ padding: "12px" }}>{record.second_weight?.toLocaleString?.() || record.second_weight || "—"}</td>
-                  <td style={{ padding: "12px", fontWeight: 700 }}>{record.net_weight?.toLocaleString?.() || record.net_weight || "—"}</td>
-                  <td style={{ padding: "12px" }}>
-                    {record.duplicate ? "Duplicate" : record.processing_status}
-                  </td>
-                </tr>
-              ))
+              records.map((record) => {
+                const duplicateStyle = record.duplicate
+                  ? { background: "rgba(245, 158, 11, 0.18)" }
+                  : {};
+
+                return (
+                  <tr
+                    key={record.id}
+                    style={{ borderBottom: "1px solid #334155", ...duplicateStyle }}
+                  >
+                    <td
+                      style={{
+                        padding: "12px",
+                        fontWeight: record.duplicate ? 800 : 400,
+                        color: record.duplicate ? "#fbbf24" : "inherit",
+                      }}
+                      title={record.duplicate ? "Repeated weight slip number" : undefined}
+                    >
+                      {record.slip_no || "—"}
+                      {record.duplicate ? "  ⚠" : ""}
+                    </td>
+                    <td style={{ padding: "12px" }}>{record.vehicle_no || "—"}</td>
+                    <td style={{ padding: "12px" }}>{record.product || "—"}</td>
+                    <td style={{ padding: "12px" }}>{formatWeight(record.first_weight)}</td>
+                    <td style={{ padding: "12px" }}>{formatWeight(record.second_weight)}</td>
+                    <td style={{ padding: "12px", fontWeight: 700 }}>{formatWeight(record.net_weight)}</td>
+                    <td style={{ padding: "12px" }}>{displayDate(record)}</td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
