@@ -2,8 +2,6 @@ function displayDate(record) {
   const value = record.first_datetime || record.second_datetime;
   if (!value) return "—";
 
-  // GTM OCR usually returns values such as "22-May-26 11:51:14 AM".
-  // The operational report only needs the date portion.
   const match = String(value).match(/\b\d{1,2}[-/]?[A-Za-z]{3}[-/]?\d{2,4}\b/);
   return match ? match[0] : value;
 }
@@ -17,6 +15,7 @@ function formatWeight(value) {
 export default function PreviewTable({ records = [] }) {
   const columns = [
     "Slip No",
+    "Party Name",
     "Vehicle No",
     "Product",
     "1st Weight",
@@ -44,7 +43,7 @@ export default function PreviewTable({ records = [] }) {
           style={{
             width: "100%",
             borderCollapse: "collapse",
-            minWidth: "850px",
+            minWidth: "950px",
           }}
         >
           <thead>
@@ -101,6 +100,7 @@ export default function PreviewTable({ records = [] }) {
                       {record.slip_no || "—"}
                       {record.duplicate ? "  ⚠" : ""}
                     </td>
+                    <td style={{ padding: "12px" }}>{record.party || "—"}</td>
                     <td style={{ padding: "12px" }}>{record.vehicle_no || "—"}</td>
                     <td style={{ padding: "12px" }}>{record.product || "—"}</td>
                     <td style={{ padding: "12px" }}>{formatWeight(record.first_weight)}</td>
