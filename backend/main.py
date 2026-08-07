@@ -3,20 +3,20 @@ from pathlib import Path
 import shutil
 import uuid
 
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from database import SessionLocal, WeightSlip
 from services.duplicate_detector import find_duplicate_by_slip_no
-from services.processing import process_weight_slip
+from services.processing_queue import enqueue_record, ensure_worker_started, queued_jobs
 from services.slip_parser import parse_gul_ahmed_text
 from services.validation import validate_weights
 
 
 app = FastAPI(
     title="WeightSlip AI Pro API",
-    version="0.3.0",
+    version="0.4.0",
 )
 
 app.add_middleware(
@@ -30,6 +30,8 @@ app.add_middleware(
 BASE_DIR = Path(__file__).resolve().parent
 STORAGE_DIR = BASE_DIR / "storage"
 ORIGINALS_DIR = STORAGE_DIR / "originals"
+
+ensure_worker_started()
 
 
 class OCRTextRequest(BaseModel):
@@ -80,13 +82,13 @@ def root():
     return {
         "app": "WeightSlip AI Pro",
         "status": "running",
-        "version": "0.3.0",
+        "version": "0.4.0",
     }
 
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "queued_jobs": queued_jobs()}
 
 
 @app.get("/api/records")
@@ -124,10 +126,7 @@ def get_record(record_id: int):
 
 
 @app.post("/api/upload")
-async def upload_weight_slip(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-):
+async def upload_weight_slip(file: UploadFile = File(...)):
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is missing.")
 
@@ -173,7 +172,7 @@ async def upload_weight_slip(
         db.refresh(record)
 
         record_id = record.id
-        background_tasks.add_task(process_weight_slip, record_id)
+        enqueue_record(record_id)
 
         return {
             "success": True,
@@ -187,7 +186,8 @@ async def upload_weight_slip(
             "processing_status": "queued",
             "validation_status": record.validation_status,
             "duplicate": record.duplicate,
-            "message": "Weight slip uploaded. OCR processing has started automatically.",
+            "queued_jobs": queued_jobs(),
+            "message": "Weight slip uploaded and queued for OCR processing.",
         }
 
     except Exception as error:
@@ -212,7 +212,7 @@ async def upload_weight_slip(
 
 
 @app.post("/api/records/{record_id}/reprocess")
-def reprocess_record(record_id: int, background_tasks: BackgroundTasks):
+def reprocess_record(record_id: int):
     db = SessionLocal()
 
     try:
@@ -223,12 +223,13 @@ def reprocess_record(record_id: int, background_tasks: BackgroundTasks):
         record.processing_status = "queued"
         record.error_message = None
         db.commit()
-        background_tasks.add_task(process_weight_slip, record_id)
+        enqueue_record(record_id)
 
         return {
             "success": True,
             "record_id": record_id,
             "processing_status": "queued",
+            "queued_jobs": queued_jobs(),
         }
     finally:
         db.close()
