@@ -3,19 +3,20 @@ from pathlib import Path
 import shutil
 import uuid
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from database import SessionLocal, WeightSlip
 from services.duplicate_detector import find_duplicate_by_slip_no
+from services.processing import process_weight_slip
 from services.slip_parser import parse_gul_ahmed_text
 from services.validation import validate_weights
 
 
 app = FastAPI(
     title="WeightSlip AI Pro API",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 app.add_middleware(
@@ -37,14 +38,12 @@ class OCRTextRequest(BaseModel):
 
 def get_daily_upload_directory() -> Path:
     now = datetime.now()
-
     upload_dir = (
         ORIGINALS_DIR
         / str(now.year)
         / f"{now.month:02d}"
         / f"{now.day:02d}"
     )
-
     upload_dir.mkdir(parents=True, exist_ok=True)
     return upload_dir
 
@@ -81,7 +80,7 @@ def root():
     return {
         "app": "WeightSlip AI Pro",
         "status": "running",
-        "version": "0.2.0",
+        "version": "0.3.0",
     }
 
 
@@ -102,7 +101,6 @@ def list_records(limit: int = 100):
             .limit(safe_limit)
             .all()
         )
-
         return {
             "success": True,
             "count": len(records),
@@ -112,8 +110,24 @@ def list_records(limit: int = 100):
         db.close()
 
 
+@app.get("/api/records/{record_id}")
+def get_record(record_id: int):
+    db = SessionLocal()
+
+    try:
+        record = db.query(WeightSlip).filter(WeightSlip.id == record_id).first()
+        if record is None:
+            raise HTTPException(status_code=404, detail="Weight slip record not found.")
+        return {"success": True, "record": serialize_record(record)}
+    finally:
+        db.close()
+
+
 @app.post("/api/upload")
-async def upload_weight_slip(file: UploadFile = File(...)):
+async def upload_weight_slip(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+):
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is missing.")
 
@@ -133,7 +147,6 @@ async def upload_weight_slip(file: UploadFile = File(...)):
     extension = Path(file.filename).suffix.lower() or ".jpg"
     internal_uuid = str(uuid.uuid4())
     stored_filename = f"{internal_uuid}{extension}"
-
     upload_directory = get_daily_upload_directory()
     save_path = upload_directory / stored_filename
 
@@ -150,7 +163,7 @@ async def upload_weight_slip(file: UploadFile = File(...)):
             internal_uuid=internal_uuid,
             original_filename=file.filename,
             stored_path=str(save_path),
-            processing_status="pending",
+            processing_status="queued",
             validation_status="pending",
             duplicate=False,
         )
@@ -159,19 +172,22 @@ async def upload_weight_slip(file: UploadFile = File(...)):
         db.commit()
         db.refresh(record)
 
+        record_id = record.id
+        background_tasks.add_task(process_weight_slip, record_id)
+
         return {
             "success": True,
-            "database_id": record.id,
+            "database_id": record_id,
             "id": internal_uuid,
             "original_name": file.filename,
             "stored_filename": stored_filename,
             "stored_path": str(save_path),
             "size": file_size,
             "content_type": file.content_type,
-            "processing_status": record.processing_status,
+            "processing_status": "queued",
             "validation_status": record.validation_status,
             "duplicate": record.duplicate,
-            "message": "Weight slip uploaded and saved successfully.",
+            "message": "Weight slip uploaded. OCR processing has started automatically.",
         }
 
     except Exception as error:
@@ -193,6 +209,29 @@ async def upload_weight_slip(file: UploadFile = File(...)):
         if db is not None:
             db.close()
         await file.close()
+
+
+@app.post("/api/records/{record_id}/reprocess")
+def reprocess_record(record_id: int, background_tasks: BackgroundTasks):
+    db = SessionLocal()
+
+    try:
+        record = db.query(WeightSlip).filter(WeightSlip.id == record_id).first()
+        if record is None:
+            raise HTTPException(status_code=404, detail="Weight slip record not found.")
+
+        record.processing_status = "queued"
+        record.error_message = None
+        db.commit()
+        background_tasks.add_task(process_weight_slip, record_id)
+
+        return {
+            "success": True,
+            "record_id": record_id,
+            "processing_status": "queued",
+        }
+    finally:
+        db.close()
 
 
 @app.post("/api/records/{record_id}/apply-ocr-text")
@@ -232,9 +271,7 @@ def apply_ocr_text(record_id: int, payload: OCRTextRequest):
             record.duplicate = False
             record.duplicate_of = None
             record.processing_status = (
-                "completed"
-                if validation["valid"]
-                else "review_required"
+                "completed" if validation["valid"] else "review_required"
             )
 
         db.commit()
