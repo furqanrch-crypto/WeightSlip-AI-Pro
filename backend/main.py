@@ -5,10 +5,12 @@ import uuid
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from database import SessionLocal, WeightSlip
 from services.duplicate_detector import find_duplicate_by_slip_no
+from services.excel_export import build_excel_report
 from services.processing_queue import enqueue_record, ensure_worker_started, queued_jobs
 from services.slip_parser import parse_gul_ahmed_text
 from services.validation import validate_weights
@@ -16,7 +18,7 @@ from services.validation import validate_weights
 
 app = FastAPI(
     title="WeightSlip AI Pro API",
-    version="0.4.0",
+    version="0.5.0",
 )
 
 app.add_middleware(
@@ -30,12 +32,17 @@ app.add_middleware(
 BASE_DIR = Path(__file__).resolve().parent
 STORAGE_DIR = BASE_DIR / "storage"
 ORIGINALS_DIR = STORAGE_DIR / "originals"
+EXPORTS_DIR = BASE_DIR / "exports"
 
 ensure_worker_started()
 
 
 class OCRTextRequest(BaseModel):
     text: str
+
+
+class ExportRequest(BaseModel):
+    record_ids: list[int]
 
 
 def get_daily_upload_directory() -> Path:
@@ -82,7 +89,7 @@ def root():
     return {
         "app": "WeightSlip AI Pro",
         "status": "running",
-        "version": "0.4.0",
+        "version": "0.5.0",
     }
 
 
@@ -121,6 +128,37 @@ def get_record(record_id: int):
         if record is None:
             raise HTTPException(status_code=404, detail="Weight slip record not found.")
         return {"success": True, "record": serialize_record(record)}
+    finally:
+        db.close()
+
+
+@app.post("/api/export/excel")
+def export_excel(payload: ExportRequest):
+    record_ids = list(dict.fromkeys(payload.record_ids))
+    if not record_ids:
+        raise HTTPException(status_code=400, detail="No records selected for export.")
+
+    db = SessionLocal()
+    try:
+        records = (
+            db.query(WeightSlip)
+            .filter(WeightSlip.id.in_(record_ids))
+            .order_by(WeightSlip.id.asc())
+            .all()
+        )
+        if not records:
+            raise HTTPException(status_code=404, detail="No matching weight slip records found.")
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"WeightSlip_Report_{timestamp}.xlsx"
+        output_path = EXPORTS_DIR / filename
+        build_excel_report(records, output_path)
+
+        return FileResponse(
+            path=str(output_path),
+            filename=filename,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
     finally:
         db.close()
 
