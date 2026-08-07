@@ -8,14 +8,18 @@ import ImagePreview from "../components/ImagePreview";
 import useImageUpload from "../hooks/useImageUpload";
 
 export default function Dashboard() {
- const {
-  images,
-  addImages,
-  removeImage,
-  clearImages,
-  imageCount,
-  duplicateCount,
-} = useImageUpload();
+  const {
+    images,
+    records,
+    addImages,
+    removeImage,
+    clearImages,
+    imageCount,
+    ocrCompleted,
+    duplicateCount,
+    netWeight,
+    overallProgress,
+  } = useImageUpload();
 
   return (
     <div
@@ -41,9 +45,11 @@ export default function Dashboard() {
           <UploadPanel onImagesSelected={addImages} />
 
           <StatsCards
-  imageCount={imageCount}
-  duplicates={duplicateCount}
-/>
+            imageCount={imageCount}
+            ocrCompleted={ocrCompleted}
+            netWeight={netWeight}
+            duplicates={duplicateCount}
+          />
 
           <ImagePreview
             images={images}
@@ -51,9 +57,9 @@ export default function Dashboard() {
             onClear={clearImages}
           />
 
-          <ProgressBar />
+          <ProgressBar progress={overallProgress} />
 
-          <PreviewTable />
+          <PreviewTable records={records} />
         </main>
       </div>
     </div>
