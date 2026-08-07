@@ -4,8 +4,19 @@ import UploadPanel from "../components/UploadPanel";
 import StatsCards from "../components/StatsCards";
 import ProgressBar from "../components/ProgressBar";
 import PreviewTable from "../components/PreviewTable";
+import ImagePreview from "../components/ImagePreview";
+import useImageUpload from "../hooks/useImageUpload";
 
 export default function Dashboard() {
+ const {
+  images,
+  addImages,
+  removeImage,
+  clearImages,
+  imageCount,
+  duplicateCount,
+} = useImageUpload();
+
   return (
     <div
       style={{
@@ -27,9 +38,21 @@ export default function Dashboard() {
             minWidth: 0,
           }}
         >
-          <UploadPanel />
-          <StatsCards />
+          <UploadPanel onImagesSelected={addImages} />
+
+          <StatsCards
+  imageCount={imageCount}
+  duplicates={duplicateCount}
+/>
+
+          <ImagePreview
+            images={images}
+            onRemove={removeImage}
+            onClear={clearImages}
+          />
+
           <ProgressBar />
+
           <PreviewTable />
         </main>
       </div>

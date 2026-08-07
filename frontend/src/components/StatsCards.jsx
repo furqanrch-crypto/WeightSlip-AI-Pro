@@ -1,9 +1,14 @@
-export default function StatsCards() {
+export default function StatsCards({
+  imageCount = 0,
+  ocrCompleted = 0,
+  netWeight = 0,
+  duplicates = 0,
+}) {
   const stats = [
-    ["0", "Images Found"],
-    ["0", "OCR Completed"],
-    ["0 Kg", "Net Weight"],
-    ["0", "Duplicates"],
+    [imageCount, "Images Found"],
+    [ocrCompleted, "OCR Completed"],
+    [`${netWeight.toLocaleString()} Kg`, "Net Weight"],
+    [duplicates, "Duplicates"],
   ];
 
   return (
