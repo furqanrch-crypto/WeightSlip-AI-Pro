@@ -3,17 +3,20 @@ from pathlib import Path
 import shutil
 import uuid
 
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from database import SessionLocal, WeightSlip
+from services.duplicate_detector import find_duplicate_by_slip_no
+from services.slip_parser import parse_gul_ahmed_text
+from services.validation import validate_weights
 
 
 app = FastAPI(
     title="WeightSlip AI Pro API",
-    version="0.1.0",
+    version="0.2.0",
 )
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,10 +26,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 BASE_DIR = Path(__file__).resolve().parent
 STORAGE_DIR = BASE_DIR / "storage"
 ORIGINALS_DIR = STORAGE_DIR / "originals"
+
+
+class OCRTextRequest(BaseModel):
+    text: str
 
 
 def get_daily_upload_directory() -> Path:
@@ -39,12 +45,35 @@ def get_daily_upload_directory() -> Path:
         / f"{now.day:02d}"
     )
 
-    upload_dir.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
+    upload_dir.mkdir(parents=True, exist_ok=True)
     return upload_dir
+
+
+def serialize_record(record: WeightSlip) -> dict:
+    return {
+        "id": record.id,
+        "internal_uuid": record.internal_uuid,
+        "slip_no": record.slip_no,
+        "original_filename": record.original_filename,
+        "stored_path": record.stored_path,
+        "vehicle_no": record.vehicle_no,
+        "party": record.party,
+        "product": record.product,
+        "first_weight": record.first_weight,
+        "second_weight": record.second_weight,
+        "net_weight": record.net_weight,
+        "first_datetime": record.first_datetime,
+        "second_datetime": record.second_datetime,
+        "location": record.location,
+        "operator": record.operator,
+        "processing_status": record.processing_status,
+        "validation_status": record.validation_status,
+        "duplicate": record.duplicate,
+        "duplicate_of": record.duplicate_of,
+        "confidence": record.confidence,
+        "error_message": record.error_message,
+        "created_at": record.created_at.isoformat() if record.created_at else None,
+    }
 
 
 @app.get("/")
@@ -52,26 +81,41 @@ def root():
     return {
         "app": "WeightSlip AI Pro",
         "status": "running",
-        "version": "0.1.0",
+        "version": "0.2.0",
     }
 
 
 @app.get("/api/health")
 def health():
-    return {
-        "status": "ok",
-    }
+    return {"status": "ok"}
+
+
+@app.get("/api/records")
+def list_records(limit: int = 100):
+    safe_limit = max(1, min(limit, 1000))
+    db = SessionLocal()
+
+    try:
+        records = (
+            db.query(WeightSlip)
+            .order_by(WeightSlip.id.desc())
+            .limit(safe_limit)
+            .all()
+        )
+
+        return {
+            "success": True,
+            "count": len(records),
+            "records": [serialize_record(record) for record in records],
+        }
+    finally:
+        db.close()
 
 
 @app.post("/api/upload")
-async def upload_weight_slip(
-    file: UploadFile = File(...),
-):
+async def upload_weight_slip(file: UploadFile = File(...)):
     if not file.filename:
-        return {
-            "success": False,
-            "message": "Filename is missing.",
-        }
+        raise HTTPException(status_code=400, detail="Filename is missing.")
 
     allowed_types = {
         "image/jpeg",
@@ -81,17 +125,12 @@ async def upload_weight_slip(
     }
 
     if file.content_type not in allowed_types:
-        return {
-            "success": False,
-            "message": "Unsupported image format.",
-            "content_type": file.content_type,
-        }
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported image format: {file.content_type}",
+        )
 
-    extension = Path(file.filename).suffix.lower()
-
-    if not extension:
-        extension = ".jpg"
-
+    extension = Path(file.filename).suffix.lower() or ".jpg"
     internal_uuid = str(uuid.uuid4())
     stored_filename = f"{internal_uuid}{extension}"
 
@@ -99,21 +138,14 @@ async def upload_weight_slip(
     save_path = upload_directory / stored_filename
 
     db = None
-    record = None
 
     try:
-        # Save image to disk
         with save_path.open("wb") as buffer:
-            shutil.copyfileobj(
-                file.file,
-                buffer,
-            )
+            shutil.copyfileobj(file.file, buffer)
 
         file_size = save_path.stat().st_size
 
-        # Save upload record to database
         db = SessionLocal()
-
         record = WeightSlip(
             internal_uuid=internal_uuid,
             original_filename=file.filename,
@@ -143,24 +175,85 @@ async def upload_weight_slip(
         }
 
     except Exception as error:
-        # Remove file if DB save or another step fails
         if save_path.exists():
             try:
                 save_path.unlink()
-            except Exception:
+            except OSError:
                 pass
 
         if db is not None:
             db.rollback()
 
-        return {
-            "success": False,
-            "message": "Unable to save uploaded weight slip.",
-            "error": str(error),
-        }
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unable to save uploaded weight slip: {error}",
+        ) from error
 
     finally:
         if db is not None:
             db.close()
-
         await file.close()
+
+
+@app.post("/api/records/{record_id}/apply-ocr-text")
+def apply_ocr_text(record_id: int, payload: OCRTextRequest):
+    db = SessionLocal()
+
+    try:
+        record = db.query(WeightSlip).filter(WeightSlip.id == record_id).first()
+        if record is None:
+            raise HTTPException(status_code=404, detail="Weight slip record not found.")
+
+        parsed = parse_gul_ahmed_text(payload.text)
+        parsed_data = parsed.to_dict()
+
+        for field, value in parsed_data.items():
+            if value is not None and hasattr(record, field):
+                setattr(record, field, value)
+
+        validation = validate_weights(
+            record.first_weight,
+            record.second_weight,
+            record.net_weight,
+        )
+        record.validation_status = validation["status"]
+
+        duplicate_record = find_duplicate_by_slip_no(
+            db,
+            record.slip_no,
+            exclude_record_id=record.id,
+        )
+
+        if duplicate_record is not None:
+            record.duplicate = True
+            record.duplicate_of = duplicate_record.id
+            record.processing_status = "duplicate"
+        else:
+            record.duplicate = False
+            record.duplicate_of = None
+            record.processing_status = (
+                "completed"
+                if validation["valid"]
+                else "review_required"
+            )
+
+        db.commit()
+        db.refresh(record)
+
+        return {
+            "success": True,
+            "record": serialize_record(record),
+            "parsed": parsed_data,
+            "validation": validation,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unable to apply OCR text: {error}",
+        ) from error
+    finally:
+        db.close()
