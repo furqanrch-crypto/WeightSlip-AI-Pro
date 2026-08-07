@@ -39,8 +39,6 @@ def _first_match(text: str, patterns: list[str]) -> Optional[str]:
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            # Some patterns intentionally match the full product name and do not
-            # contain a capture group. Return group 1 only when it exists.
             return (match.group(1) if match.lastindex else match.group(0)).strip()
     return None
 
@@ -134,6 +132,83 @@ def _extract_datetimes(text: str) -> tuple[Optional[str], Optional[str]]:
     return first, second
 
 
+def _valid_weight_triplet(first: float, second: float, net: float) -> bool:
+    if first < 2000 or second < 1000 or net < 200:
+        return False
+    if first > 100000 or second > 100000 or net > 80000:
+        return False
+    if first <= second:
+        return False
+    return abs((first - second) - net) <= 20
+
+
+def _extract_weights(text: str) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    """Extract GTM weights robustly even when OCR reading order is imperfect.
+
+    First try labelled fields. If OCR has attached date/time digits to a weight label
+    (for example reading 17 instead of 17,570), reject that result and recover the
+    three weights by finding a plausible arithmetic triplet where first-second=net.
+    """
+    labelled_patterns = {
+        "first": r"1st\s*Weight\s*[:#-]?\s*([\d,]+(?:\.\d+)?)\s*(?:Kg|KG)?",
+        "second": r"2nd\s*Weight\s*[:#-]?\s*([\d,]+(?:\.\d+)?)\s*(?:Kg|KG)?",
+        "net": r"Net\s*Weight\s*[:#-]?\s*([\d,]+(?:\.\d+)?)\s*(?:Kg|KG)?",
+    }
+
+    labelled = {}
+    for key, pattern in labelled_patterns.items():
+        match = re.search(pattern, text, re.IGNORECASE)
+        labelled[key] = _clean_weight(match.group(1)) if match else None
+
+    if all(labelled.values()) and _valid_weight_triplet(
+        labelled["first"], labelled["second"], labelled["net"]
+    ):
+        return labelled["first"], labelled["second"], labelled["net"]
+
+    # Collect realistic truck-weight candidates from OCR text. Six-digit slip IDs are
+    # automatically excluded by the upper bound, while dates/times are too small.
+    raw_numbers = re.findall(r"(?<![A-Za-z\d])([\d]{1,3}(?:,[\d]{3})+|\d{3,5})(?!\d)", text)
+    candidates: list[float] = []
+    for raw in raw_numbers:
+        value = _clean_weight(raw)
+        if value is None or value < 200 or value > 100000:
+            continue
+        if value not in candidates:
+            candidates.append(value)
+
+    best = None
+    best_score = None
+
+    for first in candidates:
+        if first < 2000:
+            continue
+        for second in candidates:
+            if second < 1000 or second >= first:
+                continue
+            calculated_net = first - second
+            for net in candidates:
+                if net < 200:
+                    continue
+                difference = abs(calculated_net - net)
+                if difference > 20:
+                    continue
+
+                # Prefer exact arithmetic and larger realistic truck weights.
+                score = (difference, -first, -second)
+                if best_score is None or score < best_score:
+                    best_score = score
+                    best = (first, second, net)
+
+    if best:
+        return best
+
+    # Do not save obviously wrong tiny OCR values into the database.
+    first = labelled["first"] if labelled["first"] and labelled["first"] >= 2000 else None
+    second = labelled["second"] if labelled["second"] and labelled["second"] >= 1000 else None
+    net = labelled["net"] if labelled["net"] and labelled["net"] >= 200 else None
+    return first, second, net
+
+
 def parse_gul_ahmed_text(text: str) -> ParsedSlip:
     compact_lines = _lines(text)
     compact = "\n".join(compact_lines)
@@ -146,16 +221,6 @@ def parse_gul_ahmed_text(text: str) -> ParsedSlip:
     slip.location = _extract_location(compact)
     slip.operator = _extract_operator(compact)
     slip.first_datetime, slip.second_datetime = _extract_datetimes(compact)
-
-    weight_patterns = {
-        "first_weight": r"1st\s*Weight\s*[:#-]?\s*([\d,]+(?:\.\d+)?)\s*(?:Kg|KG)?",
-        "second_weight": r"2nd\s*Weight\s*[:#-]?\s*([\d,]+(?:\.\d+)?)\s*(?:Kg|KG)?",
-        "net_weight": r"Net\s*Weight\s*[:#-]?\s*([\d,]+(?:\.\d+)?)\s*(?:Kg|KG)?",
-    }
-
-    for field, pattern in weight_patterns.items():
-        match = re.search(pattern, compact, re.IGNORECASE)
-        if match:
-            setattr(slip, field, _clean_weight(match.group(1)))
+    slip.first_weight, slip.second_weight, slip.net_weight = _extract_weights(compact)
 
     return slip
