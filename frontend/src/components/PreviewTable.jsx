@@ -1,4 +1,4 @@
-export default function PreviewTable() {
+export default function PreviewTable({ records = [] }) {
   const columns = [
     "Slip No",
     "Vehicle",
@@ -51,18 +51,35 @@ export default function PreviewTable() {
           </thead>
 
           <tbody>
-            <tr>
-              <td
-                colSpan={columns.length}
-                style={{
-                  textAlign: "center",
-                  padding: "35px",
-                  color: "#94a3b8",
-                }}
-              >
-                No weight slips processed yet.
-              </td>
-            </tr>
+            {!records.length ? (
+              <tr>
+                <td
+                  colSpan={columns.length}
+                  style={{
+                    textAlign: "center",
+                    padding: "35px",
+                    color: "#94a3b8",
+                  }}
+                >
+                  No weight slips processed yet.
+                </td>
+              </tr>
+            ) : (
+              records.map((record) => (
+                <tr key={record.id} style={{ borderBottom: "1px solid #334155" }}>
+                  <td style={{ padding: "12px" }}>{record.slip_no || "—"}</td>
+                  <td style={{ padding: "12px" }}>{record.vehicle_no || "—"}</td>
+                  <td style={{ padding: "12px" }}>{record.party || "—"}</td>
+                  <td style={{ padding: "12px" }}>{record.product || "—"}</td>
+                  <td style={{ padding: "12px" }}>{record.first_weight?.toLocaleString?.() || record.first_weight || "—"}</td>
+                  <td style={{ padding: "12px" }}>{record.second_weight?.toLocaleString?.() || record.second_weight || "—"}</td>
+                  <td style={{ padding: "12px", fontWeight: 700 }}>{record.net_weight?.toLocaleString?.() || record.net_weight || "—"}</td>
+                  <td style={{ padding: "12px" }}>
+                    {record.duplicate ? "Duplicate" : record.processing_status}
+                  </td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </div>
