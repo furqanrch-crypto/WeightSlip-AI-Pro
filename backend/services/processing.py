@@ -8,17 +8,19 @@ from services.validation import validate_weights
 
 
 def _quality_score(parsed, validation: dict) -> int:
-    """Score only the fields required in the operational report."""
+    """Score only the eight fields required in the final report."""
     score = 0
 
     if parsed.slip_no:
         score += 8
+    if parsed.party:
+        score += 4
     if parsed.vehicle_no:
-        score += 3
+        score += 4
     if parsed.product:
-        score += 3
+        score += 4
     if parsed.first_datetime or parsed.second_datetime:
-        score += 2
+        score += 3
 
     if parsed.first_weight is not None:
         score += 5
@@ -27,6 +29,7 @@ def _quality_score(parsed, validation: dict) -> int:
     if parsed.net_weight is not None:
         score += 5
 
+    # Correct weight arithmetic is the strongest quality signal.
     if validation.get("valid"):
         score += 20
 
@@ -50,8 +53,23 @@ def _parse_ocr_result(ocr_result: dict):
     return parsed, validation
 
 
+def _missing_required_field(parsed, validation: dict) -> bool:
+    """Return True when any field required in the final Excel/report is missing."""
+    return (
+        not parsed.slip_no
+        or not parsed.party
+        or not parsed.vehicle_no
+        or not parsed.product
+        or not (parsed.first_datetime or parsed.second_datetime)
+        or parsed.first_weight is None
+        or parsed.second_weight is None
+        or parsed.net_weight is None
+        or not validation.get("valid")
+    )
+
+
 def process_weight_slip(record_id: int) -> None:
-    """Run OCR, one fallback pass, parsing, validation and duplicate detection."""
+    """Run OCR, at most one fallback pass, parsing, validation and duplicate detection."""
     db = SessionLocal()
 
     try:
@@ -73,15 +91,9 @@ def process_weight_slip(record_id: int) -> None:
         best_parsed, best_validation = _parse_ocr_result(primary_result)
         best_score = _quality_score(best_parsed, best_validation)
 
-        needs_retry = (
-            not best_validation.get("valid")
-            or not best_parsed.slip_no
-            or best_parsed.first_weight is None
-            or best_parsed.second_weight is None
-            or best_parsed.net_weight is None
-        )
-
-        if needs_retry:
+        # One retry maximum. We retry only when one of the eight report fields
+        # is missing/invalid, so unnecessary OCR work does not block the queue.
+        if _missing_required_field(best_parsed, best_validation):
             record.processing_status = "ocr_retry"
             db.commit()
 
@@ -126,13 +138,32 @@ def process_weight_slip(record_id: int) -> None:
         else:
             record.duplicate = False
             record.duplicate_of = None
-            record.processing_status = (
-                "completed" if best_validation["valid"] else "review_required"
-            )
-            if not best_validation["valid"]:
-                record.error_message = best_validation.get("message")
-            else:
+
+            missing_fields = []
+            if not record.party:
+                missing_fields.append("party")
+            if not record.vehicle_no:
+                missing_fields.append("vehicle number")
+            if not record.product:
+                missing_fields.append("product")
+            if not (record.first_datetime or record.second_datetime):
+                missing_fields.append("date")
+            if record.first_weight is None:
+                missing_fields.append("1st weight")
+            if record.second_weight is None:
+                missing_fields.append("2nd weight")
+            if record.net_weight is None:
+                missing_fields.append("net weight")
+
+            if best_validation["valid"] and not missing_fields:
+                record.processing_status = "completed"
                 record.error_message = None
+            else:
+                record.processing_status = "review_required"
+                if missing_fields:
+                    record.error_message = "Missing required fields: " + ", ".join(missing_fields)
+                else:
+                    record.error_message = best_validation.get("message")
 
         db.commit()
 
