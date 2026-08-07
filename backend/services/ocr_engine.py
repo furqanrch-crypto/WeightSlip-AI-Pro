@@ -1,4 +1,10 @@
+import os
 from typing import Any
+
+# PaddleOCR/PaddlePaddle 3.x can crash on some CPU environments when
+# oneDNN/MKLDNN is enabled. Disable it before importing PaddleOCR.
+os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "0")
+os.environ.setdefault("FLAGS_use_mkldnn", "0")
 
 from paddleocr import PaddleOCR
 
@@ -6,6 +12,7 @@ from paddleocr import PaddleOCR
 ocr = PaddleOCR(
     use_angle_cls=True,
     lang="en",
+    enable_mkldnn=False,
 )
 
 
@@ -32,7 +39,6 @@ def _collect_text_and_scores(value: Any, texts: list[str], scores: list[float]) 
         return
 
     if isinstance(value, (list, tuple)):
-        # PaddleOCR 2.x commonly returns [box, (text, confidence)].
         if (
             len(value) == 2
             and isinstance(value[1], (list, tuple))
@@ -49,7 +55,6 @@ def _collect_text_and_scores(value: Any, texts: list[str], scores: list[float]) 
             _collect_text_and_scores(child, texts, scores)
         return
 
-    # PaddleOCR 3.x result objects may expose a json attribute/property.
     json_value = getattr(value, "json", None)
     if json_value is not None:
         try:
@@ -67,7 +72,6 @@ def run_ocr(image) -> dict:
     scores: list[float] = []
     _collect_text_and_scores(raw_result, texts, scores)
 
-    # Preserve reading order while removing exact repeated strings.
     unique_texts = list(dict.fromkeys(text.strip() for text in texts if text.strip()))
 
     confidence = None
