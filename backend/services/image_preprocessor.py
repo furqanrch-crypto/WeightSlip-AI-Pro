@@ -26,36 +26,21 @@ def preprocess_image(image_path: str):
 
 
 def fallback_preprocess_images(image_path: str):
-    """Return extra OCR variants for slips whose first OCR pass misses weights.
+    """Return one lightweight fallback OCR variant.
 
-    These are intentionally used only as fallbacks because they cost extra OCR time.
+    Older builds created multiple large/upscaled images. On Codespaces that could
+    make one difficult slip spend several minutes in OCR retry and block every
+    queued slip behind it. Keep retries bounded: one same-resolution sharpened,
+    high-contrast variant only.
     """
     image = _read_image(image_path)
-    variants = []
 
-    # Variant 1: original image. Sometimes preprocessing softens small printed digits.
-    variants.append(image)
-
-    # Variant 2: upscale and sharpen. Helpful for WhatsApp-compressed / distant photos.
-    height, width = image.shape[:2]
-    scale = 2.0 if width < 1800 else 1.5
-    upscaled = cv2.resize(
-        image,
-        None,
-        fx=scale,
-        fy=scale,
-        interpolation=cv2.INTER_CUBIC,
-    )
-
-    gaussian = cv2.GaussianBlur(upscaled, (0, 0), 1.2)
-    sharpened = cv2.addWeighted(upscaled, 1.7, gaussian, -0.7, 0)
-    variants.append(sharpened)
-
-    # Variant 3: stronger local contrast, still kept as a 3-channel BGR image.
-    gray = cv2.cvtColor(upscaled, cv2.COLOR_BGR2GRAY)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    gray = clahe.apply(gray)
-    contrast_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-    variants.append(contrast_bgr)
+    contrasted = clahe.apply(gray)
+    contrast_bgr = cv2.cvtColor(contrasted, cv2.COLOR_GRAY2BGR)
 
-    return variants
+    blurred = cv2.GaussianBlur(contrast_bgr, (0, 0), 1.0)
+    sharpened = cv2.addWeighted(contrast_bgr, 1.6, blurred, -0.6, 0)
+
+    return [sharpened]
