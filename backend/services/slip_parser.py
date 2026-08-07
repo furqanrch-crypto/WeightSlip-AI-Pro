@@ -39,7 +39,9 @@ def _first_match(text: str, patterns: list[str]) -> Optional[str]:
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            return match.group(1).strip()
+            # Some patterns intentionally match the full product name and do not
+            # contain a capture group. Return group 1 only when it exists.
+            return (match.group(1) if match.lastindex else match.group(0)).strip()
     return None
 
 
@@ -63,7 +65,6 @@ def _extract_vehicle(text: str) -> Optional[str]:
 
 
 def _extract_location(text: str) -> Optional[str]:
-    # GTM locations are typically printed as GTM-1 / GTM-2 / GTM-3.
     match = re.search(r"\bGTM\s*[- ]?\s*(\d{1,2})\b", text, re.IGNORECASE)
     if match:
         return f"GTM-{match.group(1)}"
@@ -71,7 +72,6 @@ def _extract_location(text: str) -> Optional[str]:
 
 
 def _extract_operator(text: str) -> Optional[str]:
-    # Common weighbridge operator style: M.Yousuf, S.Fasih, etc.
     candidates = re.findall(r"\b([A-Z]\.?\s*[A-Za-z]{4,})\b", text)
     blocked = {
         "Vehicle", "Product", "Party", "Legend", "Weight", "Location",
@@ -86,7 +86,6 @@ def _extract_operator(text: str) -> Optional[str]:
 
 
 def _extract_party(lines: list[str]) -> Optional[str]:
-    # Prefer known label-neighbour patterns, then a conservative fallback.
     for i, line in enumerate(lines):
         if re.fullmatch(r"Party", line, re.IGNORECASE) and i + 1 < len(lines):
             value = lines[i + 1]
@@ -100,10 +99,9 @@ def _extract_party(lines: list[str]) -> Optional[str]:
 
 
 def _extract_product(lines: list[str], text: str) -> Optional[str]:
-    # Strong GTM biomass/product vocabulary first. This prevents DAMPER (vehicle type)
-    # from being mistaken for Product when OCR reading order interleaves columns.
     product_patterns = [
         r"\bMISC\s*\([^\n]*?\)",
+        r"\bMISC\s+DRIED\s+DUNG\b",
         r"\bDRIED\s*[- ]?\s*DUNG\b",
         r"\bCOW\s*(?:DUNG|MANURE)\b",
         r"\bRICE\s*HUSK\b",
