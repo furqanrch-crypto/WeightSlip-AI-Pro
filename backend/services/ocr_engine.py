@@ -1,8 +1,9 @@
 import os
 from typing import Any
 
-# PaddleOCR/PaddlePaddle 3.x can crash on some CPU environments when
-# oneDNN/MKLDNN is enabled. Disable it before importing PaddleOCR.
+# PaddleOCR/PaddlePaddle 3.x can crash or become very slow on some CPU
+# environments when oneDNN/MKLDNN and the document pre-processing modules
+# are enabled. Disable those features for a lightweight weighbridge OCR path.
 os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "0")
 os.environ.setdefault("FLAGS_use_mkldnn", "0")
 
@@ -10,9 +11,13 @@ from paddleocr import PaddleOCR
 
 
 ocr = PaddleOCR(
-    use_angle_cls=True,
     lang="en",
     enable_mkldnn=False,
+    use_doc_orientation_classify=False,
+    use_doc_unwarping=False,
+    use_textline_orientation=False,
+    text_detection_model_name="PP-OCRv5_mobile_det",
+    text_recognition_model_name="PP-OCRv5_mobile_rec",
 )
 
 
@@ -66,7 +71,7 @@ def _collect_text_and_scores(value: Any, texts: list[str], scores: list[float]) 
 
 def run_ocr(image) -> dict:
     """Run PaddleOCR and return a normalized result."""
-    raw_result = ocr.ocr(image)
+    raw_result = ocr.predict(image)
 
     texts: list[str] = []
     scores: list[float] = []
