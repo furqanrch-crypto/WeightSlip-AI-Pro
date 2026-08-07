@@ -1,4 +1,4 @@
-export default function ProgressBar() {
+export default function ProgressBar({ progress = 0 }) {
   return (
     <section
       style={{
@@ -17,7 +17,7 @@ export default function ProgressBar() {
         }}
       >
         <span>OCR Progress</span>
-        <span>0%</span>
+        <span>{progress}%</span>
       </div>
 
       <div
@@ -30,9 +30,10 @@ export default function ProgressBar() {
       >
         <div
           style={{
-            width: "0%",
+            width: `${progress}%`,
             height: "100%",
             background: "#22c55e",
+            transition: "width 0.3s ease",
           }}
         />
       </div>
